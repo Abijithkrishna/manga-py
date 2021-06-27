@@ -1,0 +1,214 @@
+#Code to convert to PDF
+import os
+import img2pdf
+import glob
+import argparse
+import zipfile
+import shutil
+from PIL import Image
+from resizeimage import resizeimage
+
+def download_image(path):
+    """
+    Reads an image from the specified source.
+    :param path: file path of the image
+    :return: raw image data in byte[]
+    """
+
+    if path == '-':
+        raw_data = sys.stdin.buffer.read()
+    else:
+        try:
+            with open(path, "rb") as im:
+                raw_data = im.read()
+        except IsADirectoryError:
+            raise argparse.ArgumentTypeError(
+                "\"%s\" is a directory" % path)
+        except PermissionError:
+            raise argparse.ArgumentTypeError(
+                "\"%s\" permission denied" % path)
+        except FileNotFoundError:
+            raise argparse.ArgumentTypeError(
+                "\"%s\" does not exist" % path)
+
+    if len(raw_data) == 0:
+        raise argparse.ArgumentTypeError("\"%s\" is empty" % path)
+
+    return raw_data
+
+def convert_to_pdf(os_dir, chapter, file_names):
+    """
+    Converts a collection of images to PDF format
+    :param os_dir: Directory to save PDF in.
+    :param chapter: Title of the PDF.
+    :param file_names: Images to construct the PDF from.
+    :return:
+    """
+
+    print("Converting chapter %s to pdf..." % chapter)
+    ensure_directory_exist(os_dir)
+
+    pdf_bytes = None
+
+    try:
+        pdf_bytes = img2pdf.convert(*[download_image(path) for path in file_names])
+    except img2pdf.PdfTooLargeError:
+        # Sometimes the images are registered as having a dpi of 1.
+        # Because PDF has a limitation of 200 inches max per side, a
+        # special layout_fun has to be used, as to prevent an exception.
+        # default manga size 5"x7"
+
+        layout_fun = img2pdf.get_layout_fun(pagesize=(None, img2pdf.in_to_pt(7)),
+                                            imgsize=None, border=None,
+                                            fit=img2pdf.FitMode.into,
+                                            auto_orient=False)
+        pdf_bytes = img2pdf.convert(*[download_image(path) for path in file_names],
+                                    layout_fun=layout_fun)
+
+    file = open("%s/%s.pdf" % (os_dir, chapter), "wb")
+    file.write(pdf_bytes)
+    print("Conversion completed!")
+    return True
+
+def get_zips_path(manga_dir):
+  files = os.listdir(manga_dir)
+  zip_paths=[]
+
+  for file in files:
+    if file.endswith("zip"):
+      zip_paths.append(manga_dir + file)
+  
+  zip_paths.sort()
+  return zip_paths
+
+def extract_zip(zip_file, destination):
+  if not os.path.isfile(zip_file):
+    raise ValueError("Couldn't parse find zip file : "+zip_file)
+
+  ensure_directory_exist(destination)
+  
+  with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+    zip_ref.extractall(destination)
+
+def get_chapter_path(destination, zip_path):
+  file_name = zip_path.split("/")[-1]
+  file_name = file_name.split(".zip")[0]
+  file_name = destination + file_name
+  return file_name
+
+def get_pdf_name(zip_path):
+  file_name = zip_path.split("/")[-1]
+  if "_" in file_name:
+    file_name = file_name.split("_")[-1]
+  
+  return file_name.split(".zip")[0]
+
+def get_chapter_files(chapter_path):
+  files = os.listdir(chapter_path)
+  file_names=[]
+
+  for file in files:
+    if file.endswith("jpeg") or file.endswith("jpg") or file.endswith("png"):
+      file_names.append(chapter_path + "/" + file)
+
+  file_names.sort()
+  return file_names
+
+def cleanup(file_tree):
+  print("Clearing Path " + file_tree)
+  shutil.rmtree(file_tree)
+
+def ensure_directory_exist(directory):
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+
+def main():
+  manga_dir = "Manga/"
+  extract_dir = "Convertor/"
+  pdf_dir = "Pdfs/"
+  drive_location = "/content/drive/MyDrive/Manga/"
+  cleanup_og = False
+  copy_to_drive = False
+  cleanup_zips = False
+  cleanup_pdfs = False
+
+  parser = argparse.ArgumentParser()
+
+  #Mandatory Arguements
+  parser.add_argument('-mn', '--manga_name', help="The Name for Manga directory")
+  #parser.add_argument('-mn', '--manga_name', help="The Name for Manga directory")
+
+  #Remove downloaded zips
+  parser.add_argument('--cz', dest='clear_zip', action='store_true', help="Clear downloaded Zips")
+  parser.add_argument('--no-cz', dest='clear_zip', action='store_false', help="Don't Clear downloaded Zips")
+  parser.set_defaults(clear_zip=False)
+
+  #Remove Zip Extracted Content
+  parser.add_argument('--cexc', dest='clear_exc', action='store_true', help="Clear Zip Extracted Content")
+  parser.add_argument('--no-cexc', dest='clear_exc', action='store_false', help="Dont Clear Zip Extracted Content")
+  parser.set_defaults(clear_exc=True)
+
+  #Copy Pdf to Drive
+  parser.add_argument('--copy', dest='copy_drive', action='store_true', help="Copy PDFs to Google Drive")
+  parser.add_argument('--no-copy', dest='copy_drive', action='store_false', help="Don't Copy PDFs to Google Drive")
+  parser.set_defaults(copy_drive=False)
+  parser.add_argument('-drive', '--drive_path', help="The Path of Gdrive directory")
+
+  parser.add_argument('--move', dest='move_drive', action='store_true', help="Move PDFs to Google Drive")
+  parser.add_argument('--no-move', dest='move_drive', action='store_false', help="Don't Move PDFs to Google Drive")
+  parser.set_defaults(move_drive=False)
+
+  args = parser.parse_args()
+
+  if args.manga_name is None:
+    print("Please specify the Name of the manga")
+    return
+
+  if args.clear_zip:
+    cleanup_og = True
+  if args.clear_exc:
+    cleanup_zips = True
+  if args.copy_drive or args.move_drive:
+    copy_to_drive = True
+    if args.drive_path is None:
+      print("Please specify the drive path")
+      return
+    else:
+      drive_location = args.drive_path
+      if args.move_drive:
+        cleanup_pdfs = True
+
+  manga_name = args.manga_name
+
+  manga_dir = manga_dir + manga_name + "/"
+  extract_dir = extract_dir + manga_name + "/"
+  pdf_dir = pdf_dir + manga_name + "/"
+  drive_location = drive_location + manga_name + "/"
+  
+  if args.copy_drive or args.move_drive:
+    ensure_directory_exist(drive_location)
+  print(args)
+
+  zips = get_zips_path(manga_dir)
+
+  for zip_file in zips:
+    print("Extracting zip : " + zip_file)
+    chapter_path = get_chapter_path(extract_dir, zip_file)
+    extract_zip(zip_file, chapter_path)
+    chapter = get_pdf_name(zip_file)
+    file_names = get_chapter_files(chapter_path)
+    success = convert_to_pdf(pdf_dir, chapter, file_names)
+    if copy_to_drive and success:
+      print("Copying " + pdf_dir + chapter + ".pdf" + " To: " + drive_location + chapter + ".pdf")
+      shutil.copyfile(pdf_dir + chapter + ".pdf", drive_location + chapter + ".pdf")
+  
+  if cleanup_og:
+    cleanup(manga_dir)
+  if cleanup_zips:
+    cleanup(extract_dir)
+  if cleanup_pdfs:
+    cleanup(pdf_dir)
+
+if __name__ == "__main__":
+  main()
